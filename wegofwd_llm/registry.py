@@ -92,12 +92,17 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         provider_id="gemini",
         openai_compatible=True,
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-        default_model="gemini-2.0-flash",  # current stable flash (1.5 retired)
-        # gemini-2.0-flash max output is 8192.
+        # gemini-2.5-flash — verified live 2026-06-09 (valid JSON, single attempt)
+        # via this OpenAI-compat path. 2.0-flash hit free-tier quota (429); 1.5 retired.
+        default_model="gemini-2.5-flash",
+        # Conservative output cap (2.5-flash supports up to 65536) to stay clear of
+        # free-tier per-request/TPM limits that reject over-budget requests.
         capabilities=Capabilities(json_object=True, max_context=1_000_000, max_output_tokens=8192),
         managed_env_key="GEMINI_API_KEY",
         model_verified=True,
-        key_prefix="",  # Google keys are AIza… — no sk-; skip the prefix check
+        # No prefix check: AI Studio keys may be AIza… OR an AQ.-prefixed OAuth-style
+        # token — both work against this endpoint (verified 2026-06-09).
+        key_prefix="",
     ),
     "deepseek": ProviderSpec(
         provider_id="deepseek",
