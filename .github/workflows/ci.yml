@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install (with dev + anthropic extras)
+        run: pip install -e ".[dev]"
+
+      - name: Ruff — lint
+        run: ruff check wegofwd_llm/ tests/
+
+      - name: Ruff — format check
+        run: ruff format --check wegofwd_llm/ tests/
+
+      # The conformance suite is the authoring-grade gate (ADR-005 §10). No live
+      # APIs — every provider call is mocked / replayed (CLAUDE.md rule).
+      - name: Pytest
+        run: pytest
