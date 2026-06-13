@@ -1,0 +1,321 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Top-level watch for wegofwd-llm.
+#
+# WHY: wegofwd-llm is load-bearing across the WeGoFwd2020 product family
+# (StudyBuddy_OnDemand, StudyBuddy_SelfLearner/Mentible, Kathai Chithiram).
+# A regression here is a portfolio incident. See
+# `project-critique/wegofwd-llm-critique.md` §8 for the cadence rationale.
+#
+# WHAT THIS DOES: weekly + on-push, compares the current wegofwd-llm HEAD to
+# the last-reviewed commit recorded in `project-critique`. If anything has
+# changed, opens a PR to `project-critique` adding a dated watch report
+# (`wegofwd-llm-watch-YYYY-MM-DD.md`) and bumping the
+# `wegofwd-llm-last-reviewed.txt` pointer. Quiet weeks produce no PR.
+#
+# WHAT THIS DOES NOT DO: it does NOT run the test suite (the CI workflow
+# already does that on every push and PR), and it does NOT auto-re-critique
+# the code — the PR it opens is a *prompt for a human/Claude refresh of the
+# critique*, not a generated critique.
+#
+# SETUP REQUIRED before this works:
+#   1. Generate a fine-scoped Personal Access Token (or use a GitHub App
+#      installation token) with `repo` scope on
+#      `wegofwd2020-hub/project-critique`.
+#   2. Add it as a repo secret on `wegofwd2020-hub/wegofwd-llm` named
+#      `PROJECT_CRITIQUE_PR_TOKEN`.
+#   3. The bootstrap baseline (the very first run with no last-reviewed file
+#      present) defaults to commit `4823606` (v0.1.2, 2026-06-09), which is
+#      the HEAD at the moment wegofwd-llm was admitted to the critique suite.
+#
+# See .watch/README.md for full setup instructions and the manual fallback.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: watch
+
+on:
+  schedule:
+    # Mondays 09:00 UTC — quiet weeks produce no PR.
+    - cron: "0 9 * * 1"
+  push:
+    branches: [main]
+  workflow_dispatch:  # manual trigger from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      # ── 1. Check out wegofwd-llm with FULL history (needed for the delta) ──
+      - name: Checkout wegofwd-llm
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # ── 2. Check out project-critique to read the baseline + (later) PR ────
+      - name: Checkout project-critique
+        uses: actions/checkout@v6
+        with:
+          repository: wegofwd2020-hub/project-critique
+          path: project-critique
+          token: ${{ secrets.PROJECT_CRITIQUE_PR_TOKEN }}
+          fetch-depth: 0
+
+      # ── 3. Compute the delta. Bootstrap default = v0.1.2 / 4823606. ────────
+      - name: Compute delta vs last-reviewed
+        id: delta
+        run: |
+          set -euo pipefail
+
+          BASELINE_FILE="project-critique/wegofwd-llm-last-reviewed.txt"
+          BOOTSTRAP_BASELINE="4823606"  # v0.1.2 HEAD when admitted to critique
+
+          if [[ -f "$BASELINE_FILE" ]]; then
+            BASELINE=$(tr -d '[:space:]' < "$BASELINE_FILE")
+            echo "Baseline read from project-critique: $BASELINE"
+          else
+            BASELINE="$BOOTSTRAP_BASELINE"
+            echo "No baseline file in project-critique; defaulting to $BASELINE"
+          fi
+
+          CURRENT=$(git rev-parse HEAD)
+          CURRENT_SHORT=$(git rev-parse --short HEAD)
+          TODAY=$(date -u '+%Y-%m-%d')
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "current_short=$CURRENT_SHORT" >> "$GITHUB_OUTPUT"
+          echo "baseline=$BASELINE" >> "$GITHUB_OUTPUT"
+          echo "today=$TODAY" >> "$GITHUB_OUTPUT"
+
+          # If baseline == current, nothing to report.
+          if [[ "$BASELINE" == "$CURRENT" ]] || git merge-base --is-ancestor "$CURRENT" "$BASELINE" 2>/dev/null; then
+            echo "No new commits since baseline. Exiting quiet."
+            echo "has_delta=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If the baseline commit is unknown to this clone (rare — force-pushes /
+          # rebases), fall back to bootstrap.
+          if ! git cat-file -e "$BASELINE^{commit}" 2>/dev/null; then
+            echo "Baseline $BASELINE not in history; falling back to $BOOTSTRAP_BASELINE"
+            BASELINE="$BOOTSTRAP_BASELINE"
+            echo "baseline=$BASELINE" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Gather the delta.
+          COMMITS=$(git log --oneline "$BASELINE..HEAD")
+          COMMIT_COUNT=$(echo "$COMMITS" | grep -c . || echo 0)
+          DIFFSTAT=$(git diff --stat "$BASELINE..HEAD" | tail -50)
+          VERSION_BEFORE=$(git show "$BASELINE:pyproject.toml" 2>/dev/null \
+            | sed -nE 's/^version = "([^"]+)"/\1/p' | head -1 || echo "unknown")
+          VERSION_AFTER=$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)
+          TEST_COUNT=$(grep -rEc "def test_" tests/ 2>/dev/null \
+            | awk -F: '{s+=$2} END {print s+0}')
+          SRC_LOC=$(find wegofwd_llm -name "*.py" -not -name "__init__.py" \
+            -exec wc -l {} + | tail -1 | awk '{print $1+0}')
+
+          echo "has_delta=true" >> "$GITHUB_OUTPUT"
+          echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+          echo "version_before=$VERSION_BEFORE" >> "$GITHUB_OUTPUT"
+          echo "version_after=$VERSION_AFTER" >> "$GITHUB_OUTPUT"
+          echo "test_count=$TEST_COUNT" >> "$GITHUB_OUTPUT"
+          echo "src_loc=$SRC_LOC" >> "$GITHUB_OUTPUT"
+
+          # Multi-line outputs use the heredoc syntax.
+          {
+            echo "commits<<EOF_COMMITS"
+            echo "$COMMITS"
+            echo "EOF_COMMITS"
+            echo "diffstat<<EOF_DIFFSTAT"
+            echo "$DIFFSTAT"
+            echo "EOF_DIFFSTAT"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── 4. Write the dated watch report into project-critique. ────────────
+      #
+      # SECURITY: all step-output values that originate from attacker-influenced
+      # sources (`git log` commit subjects, `git diff` file paths, pyproject
+      # version strings) are passed through `env:` rather than direct `${{ }}`
+      # interpolation. Inside the heredoc they are dereferenced as `$VAR`, which
+      # bash treats as a single round of expansion — backticks and $() inside
+      # the variable's *value* are NOT re-evaluated. The trusted values (date,
+      # SHA, integer counts) are still interpolated directly for readability.
+      - name: Compose watch report
+        if: steps.delta.outputs.has_delta == 'true'
+        env:
+          TODAY:          ${{ steps.delta.outputs.today }}
+          BASELINE:       ${{ steps.delta.outputs.baseline }}
+          CURRENT:        ${{ steps.delta.outputs.current }}
+          CURRENT_SHORT:  ${{ steps.delta.outputs.current_short }}
+          COMMIT_COUNT:   ${{ steps.delta.outputs.commit_count }}
+          TEST_COUNT:     ${{ steps.delta.outputs.test_count }}
+          SRC_LOC:        ${{ steps.delta.outputs.src_loc }}
+          VER_BEFORE:     ${{ steps.delta.outputs.version_before }}
+          VER_AFTER:      ${{ steps.delta.outputs.version_after }}
+          COMMITS:        ${{ steps.delta.outputs.commits }}
+          DIFFSTAT:       ${{ steps.delta.outputs.diffstat }}
+        run: |
+          set -euo pipefail
+
+          REPORT="project-critique/wegofwd-llm-watch-${TODAY}.md"
+
+          if [[ "$VER_BEFORE" != "$VER_AFTER" ]]; then
+            VERSION_NOTE="**🔔 Version bump detected: \`${VER_BEFORE}\` → \`${VER_AFTER}\`** — per \`wegofwd-llm-critique.md\` §8, every version bump triggers a full re-critique (re-run sections 1–6, refresh the Snapshot table)."
+          else
+            VERSION_NOTE="No version bump in this window (current: \`${VER_AFTER}\`)."
+          fi
+
+          cat > "$REPORT" <<EOF
+          # wegofwd-llm — Watch Report ${TODAY}
+
+          **Triggered by:** GitHub Actions watch workflow ([wegofwd-llm/.github/workflows/watch.yml](https://github.com/wegofwd2020-hub/wegofwd-llm/blob/main/.github/workflows/watch.yml))
+          **Baseline (last reviewed):** \`${BASELINE}\`
+          **Current HEAD:** \`${CURRENT_SHORT}\` (\`${CURRENT}\`)
+          **Commit count in window:** ${COMMIT_COUNT}
+          **Current test count:** ${TEST_COUNT} \`def test_\` across \`tests/\`
+          **Current source LOC:** ${SRC_LOC} (excl. \`__init__.py\`)
+
+          ${VERSION_NOTE}
+
+          ## Commits since baseline
+
+          \`\`\`
+          ${COMMITS}
+          \`\`\`
+
+          ## Files changed (diffstat)
+
+          \`\`\`
+          ${DIFFSTAT}
+          \`\`\`
+
+          ## What to do with this report
+
+          - **If it's a version bump or touches \`contract.py\` / \`registry.py\` / \`errors.py\`:** trigger a full re-critique — re-run \`wegofwd-llm-critique.md\` §1–§7 against the new HEAD. Update the Snapshot table.
+          - **If it only touches \`tests/\` or \`pyproject.toml\` cosmetic fields:** update test/LOC numbers in the critique's Snapshot table only; no §7 re-rank needed.
+          - **If the change is large enough that the §7 priority actions move:** also refresh the README \`### wegofwd-llm (shared LLM seam)\` Quick Summary block.
+          - **If a consumer of wegofwd-llm (StudyBuddy_OnDemand / SelfLearner / Kathai Chithiram) needs to bump its pin to ride this change:** add a note to the consumer's next critique-refresh delta noting which behaviour change is now exposed.
+
+          Merging this PR advances \`wegofwd-llm-last-reviewed.txt\` to \`${CURRENT}\` — the next weekly watch will measure from this commit forward.
+
+          ---
+
+          *Generated automatically by \`wegofwd-llm/.github/workflows/watch.yml\`. The critique itself is human/Claude-authored; this report is just the change-detection prompt.*
+          EOF
+
+          # The heredoc above is indented for readability; strip the leading
+          # 10-space indent so the report is correctly left-aligned markdown.
+          sed -i 's/^          //' "$REPORT"
+
+          # Advance the last-reviewed pointer.
+          printf '%s\n' "$CURRENT" > project-critique/wegofwd-llm-last-reviewed.txt
+
+          echo "Wrote: $REPORT"
+          echo "Updated: project-critique/wegofwd-llm-last-reviewed.txt -> $CURRENT"
+
+      # ── 5. Open a PR to project-critique with the report. ─────────────────
+      #
+      # SECURITY: same pattern as Step 4. All attacker-influenced values
+      # (version strings derived from pyproject; the version_before string is
+      # the only at-risk one here, since commit_count/test_count/src_loc are
+      # validated as integers by the shell arithmetic in Step 3 and
+      # baseline/current/current_short are validated by `git rev-parse`)
+      # come in via `env:` and dereference as `$VAR`. The commit message and
+      # PR body are written to tmp files and consumed via `git commit -F` and
+      # `gh pr create --body-file`, never via inline `-m "..."` / `--body "..."`.
+      - name: Open PR to project-critique
+        if: steps.delta.outputs.has_delta == 'true'
+        env:
+          GH_TOKEN:       ${{ secrets.PROJECT_CRITIQUE_PR_TOKEN }}
+          TODAY:          ${{ steps.delta.outputs.today }}
+          BASELINE:       ${{ steps.delta.outputs.baseline }}
+          CURRENT:        ${{ steps.delta.outputs.current }}
+          CURRENT_SHORT:  ${{ steps.delta.outputs.current_short }}
+          COMMIT_COUNT:   ${{ steps.delta.outputs.commit_count }}
+          TEST_COUNT:     ${{ steps.delta.outputs.test_count }}
+          SRC_LOC:        ${{ steps.delta.outputs.src_loc }}
+          VER_BEFORE:     ${{ steps.delta.outputs.version_before }}
+          VER_AFTER:      ${{ steps.delta.outputs.version_after }}
+        working-directory: project-critique
+        run: |
+          set -euo pipefail
+
+          BRANCH="watch/wegofwd-llm-${TODAY}"
+          # Title is built from trusted-only values (date + SHA + integer).
+          TITLE="watch(wegofwd-llm): delta since ${BASELINE} (${COMMIT_COUNT} commits)"
+          REPORT_FILE="wegofwd-llm-watch-${TODAY}.md"
+
+          git config user.name "wegofwd-llm-watch[bot]"
+          git config user.email "watch@wegofwd2020.invalid"
+
+          git checkout -b "$BRANCH"
+          git add "$REPORT_FILE" wegofwd-llm-last-reviewed.txt
+
+          # Write commit message to a file so `git commit -F` consumes it
+          # literally — no shell evaluation of attacker-controlled VER_* values.
+          COMMIT_MSG_FILE="$(mktemp)"
+          cat > "$COMMIT_MSG_FILE" <<EOF
+          ${TITLE}
+
+          Baseline: ${BASELINE}
+          Current:  ${CURRENT_SHORT}
+          Version:  ${VER_BEFORE} -> ${VER_AFTER}
+          Tests:    ${TEST_COUNT}
+          SrcLOC:   ${SRC_LOC}
+
+          See ${REPORT_FILE} for the full delta and the human/Claude decision flow.
+          EOF
+          sed -i 's/^          //' "$COMMIT_MSG_FILE"
+          git commit -F "$COMMIT_MSG_FILE"
+
+          git push origin "$BRANCH"
+
+          # Write PR body to a file so `gh pr create --body-file` consumes it
+          # literally — same reasoning.
+          PR_BODY_FILE="$(mktemp)"
+          cat > "$PR_BODY_FILE" <<EOF
+          Automated weekly/push-triggered watch report for \`wegofwd-llm\`. See [\`${REPORT_FILE}\`](./${REPORT_FILE}) for the delta and decision flow.
+
+          - **Baseline:** \`${BASELINE}\`
+          - **Current HEAD:** \`${CURRENT_SHORT}\`
+          - **Commits in window:** ${COMMIT_COUNT}
+          - **Version:** \`${VER_BEFORE}\` -> \`${VER_AFTER}\`
+          - **Tests:** ${TEST_COUNT} \`def test_\`
+          - **Source LOC:** ${SRC_LOC}
+
+          Merging this PR advances \`wegofwd-llm-last-reviewed.txt\` so the next watch measures from \`${CURRENT_SHORT}\` forward. If this PR is closed without merging, the next watch will re-detect the same delta.
+          EOF
+          sed -i 's/^          //' "$PR_BODY_FILE"
+
+          gh pr create \
+            --title "$TITLE" \
+            --body-file "$PR_BODY_FILE" \
+            --base main \
+            --head "$BRANCH"
+
+      # ── 6. Always publish a summary to the workflow run page. ─────────────
+      - name: Publish run summary
+        if: always()
+        run: |
+          if [[ "${{ steps.delta.outputs.has_delta }}" == "true" ]]; then
+            cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          # 🔔 wegofwd-llm watch — delta detected
+
+          - **Baseline:** \`${{ steps.delta.outputs.baseline }}\`
+          - **Current:** \`${{ steps.delta.outputs.current_short }}\`
+          - **Commits in window:** ${{ steps.delta.outputs.commit_count }}
+          - **Version:** \`${{ steps.delta.outputs.version_before }}\` → \`${{ steps.delta.outputs.version_after }}\`
+
+          A PR has been opened against \`wegofwd2020-hub/project-critique\`.
+          EOF
+          else
+            cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          # ✅ wegofwd-llm watch — no change since baseline
+
+          - **Baseline:** \`${{ steps.delta.outputs.baseline }}\`
+          - **Current:** \`${{ steps.delta.outputs.current_short }}\`
+
+          No PR opened. Next scheduled run: next Monday 09:00 UTC.
+          EOF
+          fi
