@@ -44,7 +44,7 @@ from wegofwd_llm.registry import (
     validate_selection,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "LLM_CONTRACT_VERSION",
