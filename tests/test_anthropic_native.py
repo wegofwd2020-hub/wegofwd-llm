@@ -6,11 +6,20 @@ from __future__ import annotations
 
 import json
 
+import anthropic
+import httpx
 import pytest
 
-from wegofwd_llm.anthropic_native import AnthropicNativeProvider
+from wegofwd_llm.anthropic_native import AnthropicNativeProvider, _map_sdk_error
 from wegofwd_llm.contract import LLMRequest
-from wegofwd_llm.errors import LLMConfigurationError, LLMError, LLMResponseError
+from wegofwd_llm.errors import (
+    LLMAuthError,
+    LLMConfigurationError,
+    LLMError,
+    LLMRateLimitError,
+    LLMResponseError,
+    LLMTimeoutError,
+)
 
 KEY = "sk-ant-secret-do-not-leak"
 
@@ -129,3 +138,54 @@ def test_sdk_error_is_remapped_without_leaking_key():
 def test_empty_key_rejected():
     with pytest.raises(LLMConfigurationError):
         AnthropicNativeProvider(api_key="", client=FakeAnthropic())
+
+
+def _status_error(cls, status):
+    """A real Anthropic SDK status error whose message embeds the key, to prove
+    we never surface it."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(status, request=request)
+    return cls(f"boom {KEY}", response=response, body=None)
+
+
+# (SDK exception, expected seam error type) — auth/permission and unknown 4xx are
+# non-retryable; rate-limit, timeout, connection and 5xx are transient.
+_MAPPING_CASES = [
+    (_status_error(anthropic.AuthenticationError, 401), LLMAuthError),
+    (_status_error(anthropic.PermissionDeniedError, 403), LLMAuthError),
+    (_status_error(anthropic.RateLimitError, 429), LLMRateLimitError),
+    (_status_error(anthropic.InternalServerError, 500), LLMResponseError),
+    (anthropic.APITimeoutError(request=httpx.Request("POST", "https://x")), LLMTimeoutError),
+    (
+        anthropic.APIConnectionError(message="c", request=httpx.Request("POST", "https://x")),
+        LLMTimeoutError,
+    ),
+    (ValueError("something unrecognised"), LLMError),
+]
+
+
+@pytest.mark.parametrize("exc, expected", _MAPPING_CASES)
+def test_sdk_errors_map_to_typed_seam_errors(exc, expected):
+    mapped = _map_sdk_error(exc)
+    assert type(mapped) is expected
+    assert KEY not in str(mapped)  # static, key-free message only
+
+
+def test_auth_error_propagates_through_generate_without_leaking_key():
+    """A 401 must surface as LLMAuthError (so callers fail fast instead of
+    retrying) and must not stringify the key."""
+
+    class _Raises:
+        calls = []  # noqa: RUF012 - test stub
+
+        @property
+        def messages(self):
+            return self
+
+        def create(self, **kwargs):
+            raise _status_error(anthropic.AuthenticationError, 401)
+
+    p = AnthropicNativeProvider(api_key=KEY, client=_Raises())
+    with pytest.raises(LLMAuthError) as ei:
+        p.generate(LLMRequest(prompt="x"))
+    assert KEY not in str(ei.value)
