@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wegofwd-llm"
-version = "0.1.3"
+version = "0.2.0"
 description = "Shared multi-provider LLM seam (provider-agnostic request/response, registry, JSON conformance) for the wegofwd product family."
 readme = "README.md"
 requires-python = ">=3.11"
