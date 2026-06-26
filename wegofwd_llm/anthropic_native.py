@@ -19,10 +19,48 @@ from __future__ import annotations
 import json
 
 from wegofwd_llm.contract import Capabilities, LLMRequest, LLMResponse, Provider
-from wegofwd_llm.errors import LLMConfigurationError, LLMError, LLMResponseError
+from wegofwd_llm.errors import (
+    LLMAuthError,
+    LLMConfigurationError,
+    LLMError,
+    LLMRateLimitError,
+    LLMResponseError,
+    LLMTimeoutError,
+)
 
 # Name of the synthetic tool we force the model to call to emit structured JSON.
 _EMIT_TOOL = "emit_result"
+
+
+def _map_sdk_error(exc: Exception) -> LLMError:
+    """Map an Anthropic SDK exception to a typed, KEY-FREE seam error.
+
+    Reads only the exception's *type* and integer ``status_code`` — never its
+    message, which can stringify the api_key. Auth/permission and other 4xx are
+    non-retryable; rate-limit, timeout, connection and 5xx are transient. Anything
+    unrecognised collapses to the base ``LLMError`` (treated as retryable upstream),
+    preserving the prior fail-soft behaviour.
+    """
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover - SDK is required to construct the client
+        return LLMError("anthropic call failed")
+
+    if isinstance(exc, anthropic.AuthenticationError):
+        return LLMAuthError("anthropic rejected the credentials (401)")
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return LLMAuthError("anthropic denied the credentials (403)")
+    if isinstance(exc, anthropic.RateLimitError):
+        return LLMRateLimitError("anthropic rate-limited the request (429)")
+    # APITimeoutError subclasses APIConnectionError — check it first for specificity.
+    if isinstance(exc, anthropic.APITimeoutError):
+        return LLMTimeoutError("anthropic request timed out")
+    if isinstance(exc, anthropic.APIConnectionError):
+        return LLMTimeoutError("anthropic connection failed")
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status >= 500:
+        return LLMResponseError("anthropic server error (5xx)")
+    return LLMError("anthropic call failed")
 
 
 class AnthropicNativeProvider(Provider):
@@ -75,9 +113,12 @@ class AnthropicNativeProvider(Provider):
 
         try:
             message = self._client.messages.create(**kwargs)
-        except Exception:
-            # Never chain — SDK exceptions may include the api_key in their repr.
-            raise LLMError("anthropic call failed") from None
+        except Exception as exc:
+            # Map to a typed seam error so callers can fail fast on auth/4xx and
+            # retry only the transient classes (429/timeout/5xx). We branch on the
+            # SDK exception's *type* and numeric status_code only — never its
+            # message — and never chain, since SDK reprs can stringify the api_key.
+            raise _map_sdk_error(exc) from None
 
         text = self._extract(message, want_json)
         usage = getattr(message, "usage", None)
