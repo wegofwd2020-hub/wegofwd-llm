@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wegofwd2020-hub/wegofwd-llm/schema/content-trust-manifest.v1.json",
+  "title": "Content Trust Manifest",
+  "description": "Customer-facing record of how a unit of curated content was produced and which quality/compliance gates it passed. Shape owned by wegofwd-llm (ADR-015); seam fills provenance+validation, the product packager attaches the rest. Carries NO secret material — safe to embed in a client payload.",
+  "type": "object",
+  "required": ["trust_manifest_version", "provenance", "validation"],
+  "additionalProperties": false,
+  "properties": {
+    "trust_manifest_version": { "type": "integer", "const": 1 },
+    "provenance": {
+      "type": "object",
+      "required": ["provider", "model", "model_verified", "integration_version", "contract_version"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "model_verified": { "type": "boolean" },
+        "integration_version": { "type": "integer", "minimum": 1 },
+        "contract_version": { "type": "integer", "minimum": 1 },
+        "generated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": ["schema_validated"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_validated": { "type": "boolean" },
+        "repair_attempts": { "type": "integer", "minimum": 0 },
+        "schema_id": { "type": "string" }
+      }
+    },
+    "compliance": {
+      "type": "object",
+      "required": ["ruleset", "checks_passed", "checks_total", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "ruleset": { "type": "string" },
+        "checks_passed": { "type": "integer", "minimum": 0 },
+        "checks_total": { "type": "integer", "minimum": 1 },
+        "status": { "type": "string", "enum": ["pass", "pass_with_notes", "fail"] }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["content_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "signed": { "type": "boolean" }
+      }
+    },
+    "sourcing": {
+      "type": "object",
+      "required": ["every_claim_cited"],
+      "additionalProperties": false,
+      "properties": {
+        "every_claim_cited": { "type": "boolean" },
+        "source_refs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": ["human_approved"],
+      "additionalProperties": false,
+      "properties": {
+        "human_approved": { "type": "boolean" },
+        "approver_distinct_from_generator": { "type": "boolean" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["byok", "prompts_stored", "key_stored"],
+      "additionalProperties": false,
+      "properties": {
+        "byok": { "type": "boolean" },
+        "prompts_stored": { "type": "boolean" },
+        "key_stored": { "type": "boolean" }
+      }
+    }
+  }
+}
