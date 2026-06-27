@@ -10,6 +10,14 @@ generation, not a hardwired vendor.
 > rationale. Extracted from `StudyBuddy_SelfLearner/pipeline/providers/` at
 > `main@2649101`.
 
+## Shared-services architecture
+
+[`docs/shared_service.drawio`](docs/shared_service.drawio) is the **canonical**
+platform-services architecture diagram for the wegofwd product family. The
+consumer products link here rather than each keeping a copy:
+**StudyBuddy_SelfLearner**, **kathai-chithiram**, **pramana**. Open/edit it with
+[draw.io](https://app.diagrams.net/) (or the VS Code Draw.io extension).
+
 ## What it is
 
 | Module | Role |
