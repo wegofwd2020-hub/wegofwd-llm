@@ -104,6 +104,25 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         # token — both work against this endpoint (verified 2026-06-09).
         key_prefix="",
     ),
+    "zai": ProviderSpec(
+        provider_id="zai",
+        openai_compatible=True,
+        # General OpenAI-compatible endpoint. NOTE: the Coding-Plan endpoint
+        # (/api/coding/paas/v4) is a SEPARATE, non-interchangeable URL — do not
+        # swap it in here. Our client posts {base_url}/chat/completions, so the
+        # base must NOT carry a trailing /v1 (some clients wrongly append one).
+        base_url="https://api.z.ai/api/paas/v4",
+        # GLM-4.6 — base_url + model verified against z.ai docs 2026-06-30
+        # (200K context, up to 128K output); not yet live-tested from here.
+        default_model="glm-4.6",
+        # Conservative: GLM speaks json_object + tools over the OpenAI path;
+        # leave json_schema off until confirmed live.
+        capabilities=Capabilities(json_object=True, tools=True, max_context=200_000),
+        managed_env_key="ZAI_API_KEY",
+        model_verified=True,
+        # Z.ai keys are bearer tokens with no stable "sk-" prefix — length-only check.
+        key_prefix="",
+    ),
     "deepseek": ProviderSpec(
         provider_id="deepseek",
         openai_compatible=True,

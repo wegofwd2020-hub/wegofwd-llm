@@ -29,6 +29,7 @@ def test_registry_has_the_known_providers():
         "groq",
         "openrouter",
         "gemini",
+        "zai",
     }
 
 
