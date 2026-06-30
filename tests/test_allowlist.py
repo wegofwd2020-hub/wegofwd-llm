@@ -20,7 +20,7 @@ from wegofwd_llm.registry import (
     validate_selection,
 )
 
-ALL = {"anthropic", "openai", "deepseek", "qwen", "gemma", "groq", "openrouter", "gemini"}
+ALL = {"anthropic", "openai", "deepseek", "qwen", "gemma", "groq", "openrouter", "gemini", "zai"}
 
 
 def _mock_client():
